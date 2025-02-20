@@ -1,7 +1,7 @@
 from datasets import Dataset, load_dataset
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-from dynamic_embedding_pruning import HFEmbeddingPruner
+from partial_embedding_matrix_adaptation import HFEmbeddingPruner
 
 # 1. Load model.
 
@@ -40,7 +40,11 @@ print(f"Model parameter reduction: {parameter_reduction:.1%}")
 
 # 4. Use model as normal.
 
-# Your inference code here...
+# Your fine-tuning code here...
+
+# Note: model saving should work as normal. 
+# The model state dict will contain the complete embedding matrix.
+# This is handled via PyTorch hooks (see `embedding_pruner.py`).
 
 # 5. (Optional) Restore the embedding matrix to include all vocabulary.
 

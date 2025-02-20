@@ -109,6 +109,7 @@ class EmbeddingPruner:
         embedding_weight = torch.load(
             embedding_weight_file,
             map_location=reduced_embedding_weight.device,
+            weights_only=True,
         )
         embedding_weight[selected_token_ids] = reduced_embedding_weight
         return embedding_weight

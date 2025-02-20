@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from dynamic_embedding_pruning import EmbeddingPruner
+from partial_embedding_matrix_adaptation import EmbeddingPruner
 
 
 class TestEmbeddingPruner(unittest.TestCase):

@@ -21,6 +21,7 @@ import logging
 import os
 import random
 import sys
+import warnings
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -46,12 +47,12 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
-from dynamic_embedding_pruning import HFEmbeddingPruner
-from dynamic_embedding_pruning.utils import CUDAMemoryStatsTrainCallback
+from partial_embedding_matrix_adaptation import HFEmbeddingPruner
+from partial_embedding_matrix_adaptation.utils import CUDAMemoryStatsTrainCallback
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-check_min_version("4.29.0")
+check_min_version("4.37.0")
 
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/text-classification/requirements.txt")
 
@@ -159,12 +160,28 @@ class ModelArguments:
         default="main",
         metadata={"help": "The specific model version to use (can be a branch name, tag name or commit id)."},
     )
+    token: str = field(
+        default=None,
+        metadata={
+            "help": (
+                "The token to use as HTTP bearer authorization for remote files. If not specified, will use the token "
+                "generated when running `huggingface-cli login` (stored in `~/.huggingface`)."
+            )
+        },
+    )
     use_auth_token: bool = field(
+        default=None,
+        metadata={
+            "help": "The `use_auth_token` argument is deprecated and will be removed in v4.34. Please use `token` instead."
+        },
+    )
+    trust_remote_code: bool = field(
         default=False,
         metadata={
             "help": (
-                "Will use the token generated when running `huggingface-cli login` (necessary to use this script "
-                "with private models)."
+                "Whether or not to allow for custom models defined on the Hub in their own modeling files. This option"
+                "should only be set to `True` for repositories you trust and in which you have read the code, as it will "
+                "execute code present on the Hub on your local machine."
             )
         },
     )
@@ -172,9 +189,9 @@ class ModelArguments:
         default=False,
         metadata={"help": "Will enable to load a pretrained model whose head dimensions are different."},
     )
-    dynamic_embedding_pruning: Optional[bool] = field(
+    partial_embedding_matrix_adaptation: Optional[bool] = field(
         default=False,
-        metadata={"help": "Whether to use dynamic embedding pruning."},
+        metadata={"help": "Whether to use partial embedding matrix adaptation."},
     )
 
 
@@ -183,7 +200,7 @@ def load_combined_dataset(
     names: list[str],
     split: str,
     cache_dir: Optional[str],
-    use_auth_token: Optional[bool],
+    token: Optional[str],
 ) -> Dataset:
     return concatenate_datasets(
         [
@@ -192,7 +209,7 @@ def load_combined_dataset(
                 name=name,
                 split=split,
                 cache_dir=cache_dir,
-                use_auth_token=use_auth_token,
+                token=token,
             )
             for name in names
         ]  # type: ignore[reportGeneralTypeIssues]
@@ -206,6 +223,15 @@ def main():
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    if model_args.use_auth_token is not None:
+        warnings.warn(
+            "The `use_auth_token` argument is deprecated and will be removed in v4.34. Please use `token` instead.",
+            FutureWarning,
+        )
+        if model_args.token is not None:
+            raise ValueError("`token` and `use_auth_token` are both specified. Please set only the argument `token`.")
+        model_args.token = model_args.use_auth_token
 
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
@@ -231,8 +257,8 @@ def main():
 
     # Log on each process the small summary:
     logger.warning(
-        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
-        + f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
+        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
+        + f"distributed training: {training_args.parallel_mode.value == 'distributed'}, 16-bits training: {training_args.fp16}"
     )
     logger.info(f"Training/evaluation parameters {training_args}")
 
@@ -264,7 +290,7 @@ def main():
                 model_args.languages,
                 split="train",
                 cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
+                token=model_args.token,
             )
         else:
             train_dataset = load_combined_dataset(
@@ -272,7 +298,7 @@ def main():
                 model_args.train_languages,
                 split="train",
                 cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
+                token=model_args.token,
             )
         label_list = train_dataset.features["label"].names
 
@@ -282,7 +308,7 @@ def main():
             model_args.languages,
             split="validation",
             cache_dir=model_args.cache_dir,
-            use_auth_token=True if model_args.use_auth_token else None,
+            token=model_args.token,
         )
         label_list = eval_dataset.features["label"].names
 
@@ -292,7 +318,7 @@ def main():
             model_args.languages,
             split="test",
             cache_dir=model_args.cache_dir,
-            use_auth_token=True if model_args.use_auth_token else None,
+            token=model_args.token,
         )
         label_list = predict_dataset.features["label"].names
 
@@ -310,7 +336,8 @@ def main():
         finetuning_task="xnli",
         cache_dir=model_args.cache_dir,
         revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
+        token=model_args.token,
+        trust_remote_code=model_args.trust_remote_code,
     )
     tokenizer = AutoTokenizer.from_pretrained(
         model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
@@ -318,7 +345,8 @@ def main():
         cache_dir=model_args.cache_dir,
         use_fast=model_args.use_fast_tokenizer,
         revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
+        token=model_args.token,
+        trust_remote_code=model_args.trust_remote_code,
     )
     model = AutoModelForSequenceClassification.from_pretrained(
         model_args.model_name_or_path,
@@ -326,7 +354,8 @@ def main():
         config=config,
         cache_dir=model_args.cache_dir,
         revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
+        token=model_args.token,
+        trust_remote_code=model_args.trust_remote_code,
         ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
     )
 
@@ -388,7 +417,7 @@ def main():
             )
 
     # Get the metric function
-    metric = evaluate.load("xnli")
+    metric = evaluate.load("xnli", cache_dir=model_args.cache_dir)
 
     # You can define your custom compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with a
     # predictions and label_ids field) and has to return a dictionary string to float.
@@ -405,7 +434,7 @@ def main():
     else:
         data_collator = None
 
-    if model_args.dynamic_embedding_pruning:
+    if model_args.partial_embedding_matrix_adaptation:
         # We only include the datasets that are required for the current run.
         required_datasets = DatasetDict()
 

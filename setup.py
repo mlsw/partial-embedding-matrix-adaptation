@@ -1,7 +1,7 @@
 from setuptools import setup, find_namespace_packages
 
 setup(
-    name="dynamic_embedding_pruning",
+    name="partial_embedding_matrix_adaptation",
     version="0.0.1",
     package_dir={"": "src"},
     packages=find_namespace_packages(where="src"),
